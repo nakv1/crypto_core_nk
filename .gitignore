@@ -1,0 +1,19 @@
+# Виртуальное окружение
+.venv/
+venv/
+
+# PyCharm
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Кэш тестов
+.pytest_cache/
+
+# Локальные файлы задания
+project_ru/
