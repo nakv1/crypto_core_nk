@@ -1,76 +1,65 @@
 # CryptoCore
 
-CryptoCore — учебная библиотека и консольная утилита на Python для шифрования и расшифрования файлов с помощью AES-128. В Sprint 1 реализованы режим ECB и дополнение PKCS#7. PyCryptodome используется только для преобразования одного блока AES.
+CryptoCore — учебная консольная утилита для работы с криптографическими алгоритмами. В Sprint 1 реализованы AES-128, режим ECB и дополнение PKCS#7. Проект поддерживает шифрование и расшифрование текстовых и бинарных файлов.
 
-## Требования и зависимости
+## Реализовано в Sprint 1
 
-- Python 3.10 или новее
+- AES-128;
+- режим ECB;
+- дополнение PKCS#7;
+- шифрование и расшифрование файлов;
+- консольный интерфейс;
+- работа с бинарными данными;
+- тесты и проверка совместимости с OpenSSL.
+
+## Зависимости
+
+- Python 3.10+
 - PyCryptodome 3.23.0
-- pytest 8 или новее для запуска тестов
-
-OpenSSL не требуется для работы программы и используется только для проверки совместимости.
+- pytest 8+ — только для запуска тестов
+- OpenSSL — необязательно, используется только для проверки совместимости
 
 ## Установка
 
-Создание и активация виртуального окружения в Windows PowerShell:
+Команды для Windows PowerShell:
 
 ```powershell
+git clone https://github.com/nakv1/crypto_core_nk.git
+cd crypto_core_nk
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e .
-```
-
-Установка вместе с зависимостями для тестов:
-
-```powershell
 python -m pip install -e ".[dev]"
 ```
 
 ## Использование
 
-Ключ передаётся через `--key` как строка из 32 шестнадцатеричных символов. Такая строка соответствует 16-байтному ключу AES-128.
-
-Шифрование файла:
+### Шифрование
 
 ```powershell
-cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.bin --output ciphertext.bin
+cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output ciphertext.bin
 ```
 
-Расшифрование файла:
+### Расшифрование
 
 ```powershell
-cryptocore --algorithm aes --mode ecb --decrypt --key 000102030405060708090a0b0c0d0e0f --input ciphertext.bin --output decrypted.bin
+cryptocore --algorithm aes --mode ecb --decrypt --key 000102030405060708090a0b0c0d0e0f --input ciphertext.bin --output decrypted.txt
 ```
 
-Ту же команду можно запустить как Python-модуль:
+Программу также можно запустить как Python-модуль: `python -m cryptocore`.
 
-```powershell
-python -m cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.bin --output ciphertext.bin
-```
+## Аргументы
 
-## Проверка полного цикла
+| Аргумент | Описание |
+| --- | --- |
+| `--algorithm` | Алгоритм шифрования. В Sprint 1 поддерживается только `aes`. |
+| `--mode` | Режим шифрования. В Sprint 1 поддерживается только `ecb`. |
+| `--encrypt` | Шифрование входного файла. |
+| `--decrypt` | Расшифрование входного файла. |
+| `--key` | Ключ AES-128: ровно 32 шестнадцатеричных символа. |
+| `--input` | Путь к входному файлу. |
+| `--output` | Путь к выходному файлу. |
 
-В примере файл `a.bin` сначала шифруется, затем расшифровывается в `b.bin`:
-
-```powershell
-cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input a.bin --output a.bin.enc
-cryptocore --algorithm aes --mode ecb --decrypt --key 000102030405060708090a0b0c0d0e0f --input a.bin.enc --output b.bin
-python -c "from pathlib import Path; assert Path('a.bin').read_bytes() == Path('b.bin').read_bytes()"
-```
-
-Если файлы совпадают, последняя команда ничего не выводит.
-
-## Проверка через OpenSSL
-
-CryptoCore и OpenSSL по умолчанию используют стандартное дополнение PKCS#7. Для этой проверки не нужно передавать `-nopad`.
-
-```powershell
-cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.bin --output ciphertext.bin
-openssl enc -aes-128-ecb -K 000102030405060708090a0b0c0d0e0f -in plaintext.bin -out ciphertext.bin.ossl
-python -c "from pathlib import Path; assert Path('ciphertext.bin').read_bytes() == Path('ciphertext.bin.ossl').read_bytes()"
-```
-
-Команды работают в PowerShell, Git Bash и Linux, если `openssl` доступен в `PATH`.
+Параметры `--encrypt` и `--decrypt` взаимоисключающие: должен быть указан ровно один из них.
 
 ## Структура проекта
 
@@ -96,7 +85,32 @@ crypto_core_nk/
 └── README.md
 ```
 
-`aes.py` выполняет преобразование одного блока AES, `padding.py` отвечает за PKCS#7, а `modes/ecb.py` обрабатывает блоки в режиме ECB. В `cli.py` находится интерфейс командной строки, в `file_io.py` — бинарное чтение и запись файлов. Каталог `tests` содержит тесты этих компонентов.
+- `aes.py` — работа с одним блоком AES-128;
+- `padding.py` — дополнение PKCS#7;
+- `modes/ecb.py` — логика режима ECB;
+- `cli.py` — интерфейс командной строки;
+- `file_io.py` — чтение и запись файлов;
+- `tests/` — тесты проекта.
+
+## Проверка полного цикла
+
+```powershell
+cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input a.bin --output a.bin.enc
+cryptocore --algorithm aes --mode ecb --decrypt --key 000102030405060708090a0b0c0d0e0f --input a.bin.enc --output b.bin
+python -c "from pathlib import Path; assert Path('a.bin').read_bytes() == Path('b.bin').read_bytes()"
+```
+
+Если последняя команда ничего не вывела, файлы совпадают.
+
+## Проверка с OpenSSL
+
+CryptoCore и OpenSSL используют дополнение PKCS#7, поэтому параметр `-nopad` здесь не нужен.
+
+```powershell
+cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.bin --output ciphertext.bin
+openssl enc -aes-128-ecb -K 000102030405060708090a0b0c0d0e0f -in plaintext.bin -out ciphertext.bin.ossl
+python -c "from pathlib import Path; assert Path('ciphertext.bin').read_bytes() == Path('ciphertext.bin.ossl').read_bytes()"
+```
 
 ## Тесты
 
@@ -104,6 +118,8 @@ crypto_core_nk/
 python -m pytest -q
 ```
 
-## Замечание о безопасности
+Тесты проверяют AES, PKCS#7, ECB, CLI и обработку ошибочных сценариев.
 
-ECB сохраняет заметные закономерности исходных данных и не подходит для защиты реальной информации. В этом проекте режим используется только в учебных целях.
+## Примечание
+
+ECB используется в проекте только в учебных целях и не рекомендуется для защиты реальных данных.
