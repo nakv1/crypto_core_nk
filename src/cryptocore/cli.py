@@ -1,14 +1,27 @@
 """Интерфейс командной строки CryptoCore."""
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 
 from cryptocore.file_io import read_file, write_file
+from cryptocore.modes.cbc import encrypt as encrypt_cbc
+from cryptocore.modes.cfb import encrypt as encrypt_cfb
+from cryptocore.modes.ctr import encrypt as encrypt_ctr
 from cryptocore.modes.ecb import CiphertextLengthError
 from cryptocore.modes.ecb import decrypt as decrypt_ecb
 from cryptocore.modes.ecb import encrypt as encrypt_ecb
+from cryptocore.modes.ofb import encrypt as encrypt_ofb
 from cryptocore.padding import PaddingError
+
+
+MODE_ENCRYPTORS = {
+    "cbc": encrypt_cbc,
+    "cfb": encrypt_cfb,
+    "ofb": encrypt_ofb,
+    "ctr": encrypt_ctr,
+}
 
 
 def parse_key(value: str) -> bytes:
@@ -28,10 +41,12 @@ def build_encryption_parser() -> argparse.ArgumentParser:
     """Создание парсера аргументов шифрования."""
     parser = argparse.ArgumentParser(
         prog="cryptocore",
-        description="Encrypt or decrypt files with AES-128 ECB.",
+        description="Encrypt or decrypt files with AES-128.",
     )
     parser.add_argument("--algorithm", choices=["aes"], required=True)
-    parser.add_argument("--mode", choices=["ecb"], required=True)
+    parser.add_argument(
+        "--mode", choices=["ecb", "cbc", "cfb", "ofb", "ctr"], required=True
+    )
 
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--encrypt", action="store_true")
@@ -67,8 +82,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.encrypt:
-            output_data = encrypt_ecb(args.key, input_data)
+            if args.mode == "ecb":
+                output_data = encrypt_ecb(args.key, input_data)
+            else:
+                iv = os.urandom(16)
+                ciphertext = MODE_ENCRYPTORS[args.mode](args.key, iv, input_data)
+                output_data = iv + ciphertext
         else:
+            if args.mode != "ecb":
+                print(
+                    "error: decryption for this mode is not implemented yet",
+                    file=sys.stderr,
+                )
+                return 1
             output_data = decrypt_ecb(args.key, input_data)
     except PaddingError:
         print(
