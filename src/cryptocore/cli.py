@@ -63,6 +63,14 @@ def parse_iv(value: str) -> bytes:
     return bytes.fromhex(value)
 
 
+def is_predictable_key(key: bytes) -> bool:
+    """Проверка ключа на простые предсказуемые последовательности."""
+    repeated = len(set(key)) == 1
+    increasing = all(next_byte == byte + 1 for byte, next_byte in zip(key, key[1:]))
+    decreasing = all(next_byte == byte - 1 for byte, next_byte in zip(key, key[1:]))
+    return repeated or increasing or decreasing
+
+
 def build_encryption_parser() -> argparse.ArgumentParser:
     """Создание парсера аргументов шифрования."""
     parser = argparse.ArgumentParser(
@@ -78,7 +86,7 @@ def build_encryption_parser() -> argparse.ArgumentParser:
     operation.add_argument("--encrypt", action="store_true")
     operation.add_argument("--decrypt", action="store_true")
 
-    parser.add_argument("--key", type=parse_key, required=True)
+    parser.add_argument("--key", type=parse_key)
     parser.add_argument("--iv", type=parse_iv)
     parser.add_argument("--input", required=True, dest="input_path")
     parser.add_argument("--output", dest="output_path")
@@ -90,6 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_encryption_parser()
     args = parser.parse_args(argv)
 
+    if args.decrypt and args.key is None:
+        parser.error("--key is required with --decrypt")
     if args.iv is not None and args.encrypt:
         parser.error("--iv can only be used with --decrypt")
     if args.iv is not None and args.mode == "ecb":
@@ -125,12 +135,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
+    if args.key is not None and is_predictable_key(args.key):
+        print("warning: key looks predictable", file=sys.stderr)
+
     try:
         if args.encrypt:
             if args.mode == "ecb":
+                if args.key is None:
+                    args.key = csprng.generate_random_bytes(16)
+                    print(f"[INFO] Generated random key: {args.key.hex()}")
                 output_data = encrypt_ecb(args.key, input_data)
             else:
                 iv = csprng.generate_random_bytes(16)
+                if args.key is None:
+                    args.key = csprng.generate_random_bytes(16)
+                    print(f"[INFO] Generated random key: {args.key.hex()}")
                 ciphertext = MODE_ENCRYPTORS[args.mode](args.key, iv, input_data)
                 output_data = iv + ciphertext
         else:
