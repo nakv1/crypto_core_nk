@@ -122,7 +122,9 @@ def test_cryptocore_encrypt_openssl_decrypt(
     raw_ciphertext_path = tmp_path / "ciphertext.raw"
     openssl_plaintext_path = tmp_path / "openssl-plaintext.bin"
     plaintext_path.write_bytes(PLAINTEXT)
-    monkeypatch.setattr("cryptocore.cli.os.urandom", lambda size: IV)
+    monkeypatch.setattr(
+        "cryptocore.cli.csprng.generate_random_bytes", lambda size: IV
+    )
 
     cryptocore_result = main(
         _cli_arguments(

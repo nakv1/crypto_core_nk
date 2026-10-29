@@ -1,11 +1,11 @@
 """Интерфейс командной строки CryptoCore."""
 
 import argparse
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from cryptocore import csprng
 from cryptocore.file_io import read_file, write_file, write_file_exclusive
 from cryptocore.modes.cbc import CiphertextLengthError as CbcCiphertextLengthError
 from cryptocore.modes.cbc import decrypt as decrypt_cbc
@@ -130,7 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.mode == "ecb":
                 output_data = encrypt_ecb(args.key, input_data)
             else:
-                iv = os.urandom(16)
+                iv = csprng.generate_random_bytes(16)
                 ciphertext = MODE_ENCRYPTORS[args.mode](args.key, iv, input_data)
                 output_data = iv + ciphertext
         else:
@@ -151,6 +151,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     iv = input_data[:16]
                     ciphertext = input_data[16:]
                 output_data = MODE_DECRYPTORS[args.mode](args.key, iv, ciphertext)
+    except csprng.RandomGenerationError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     except PaddingError:
         print(
             "error: invalid padding (wrong key or corrupted data)",
