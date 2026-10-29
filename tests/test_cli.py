@@ -2,6 +2,7 @@ import pytest
 
 from cryptocore.aes import encrypt_block
 from cryptocore.cli import main
+from cryptocore.modes.ecb import encrypt as encrypt_ecb
 
 
 KEY_HEX = "2b7e151628aed2a6abf7158809cf4f3c"
@@ -170,3 +171,134 @@ def test_cli_allows_same_input_and_output_path(tmp_path):
     assert path.read_bytes() != original
     assert main(cli_arguments("--decrypt", path, path)) == 0
     assert path.read_bytes() == original
+
+
+def automatic_output_arguments(operation, input_path):
+    return [
+        "--algorithm",
+        "aes",
+        "--mode",
+        "ecb",
+        operation,
+        "--key",
+        KEY_HEX,
+        "--input",
+        str(input_path),
+    ]
+
+
+def test_cli_encrypt_without_output_uses_enc_suffix(tmp_path):
+    input_path = tmp_path / "message.bin"
+    output_path = tmp_path / "message.bin.enc"
+    input_path.write_bytes(b"automatic encryption output")
+
+    result = main(automatic_output_arguments("--encrypt", input_path))
+
+    assert result == 0
+    assert output_path.is_file()
+    assert output_path.read_bytes() != input_path.read_bytes()
+
+
+def test_cli_decrypt_without_output_uses_dec_suffix(tmp_path):
+    input_path = tmp_path / "ciphertext.bin"
+    output_path = tmp_path / "ciphertext.bin.dec"
+    plaintext = b"automatic decryption output"
+    input_path.write_bytes(encrypt_ecb(KEY, plaintext))
+
+    result = main(automatic_output_arguments("--decrypt", input_path))
+
+    assert result == 0
+    assert output_path.read_bytes() == plaintext
+
+
+def test_cli_round_trip_with_automatic_output_names(tmp_path):
+    input_path = tmp_path / "original.bin"
+    encrypted_path = tmp_path / "original.bin.enc"
+    decrypted_path = tmp_path / "original.bin.enc.dec"
+    original = b"round trip with automatic names"
+    input_path.write_bytes(original)
+
+    encrypt_result = main(automatic_output_arguments("--encrypt", input_path))
+    decrypt_result = main(automatic_output_arguments("--decrypt", encrypted_path))
+
+    assert encrypt_result == 0
+    assert decrypt_result == 0
+    assert decrypted_path.read_bytes() == original
+
+
+def test_cli_rejects_existing_automatic_output_without_numbering(tmp_path, capsys):
+    input_path = tmp_path / "message.bin"
+    output_path = tmp_path / "message.bin.enc"
+    numbered_path = tmp_path / "message.bin.enc.1"
+    original_output = b"existing output must stay unchanged"
+    input_path.write_bytes(b"new plaintext")
+    output_path.write_bytes(original_output)
+
+    result = main(automatic_output_arguments("--encrypt", input_path))
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert "error:" in captured.err
+    assert output_path.read_bytes() == original_output
+    assert not numbered_path.exists()
+
+
+def test_cli_does_not_create_automatic_output_on_crypto_error(tmp_path, capsys):
+    input_path = tmp_path / "broken.bin"
+    output_path = tmp_path / "broken.bin.dec"
+    input_path.write_bytes(b"not a complete AES block")
+
+    result = main(automatic_output_arguments("--decrypt", input_path))
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err.startswith("error:")
+    assert not output_path.exists()
+
+
+def test_cli_preserves_file_created_during_automatic_output_race(
+    tmp_path, monkeypatch, capsys
+):
+    input_path = tmp_path / "message.bin"
+    output_path = tmp_path / "message.bin.enc"
+    raced_output = b"created by another process"
+    input_path.write_bytes(b"plaintext")
+
+    def raise_file_exists(path, data):
+        assert path == str(output_path)
+        assert data
+        output_path.write_bytes(raced_output)
+        raise FileExistsError
+
+    monkeypatch.setattr("cryptocore.cli.write_file_exclusive", raise_file_exists)
+
+    result = main(automatic_output_arguments("--encrypt", input_path))
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert "error:" in captured.err
+    assert output_path.read_bytes() == raced_output
+
+
+def test_cli_reports_automatic_output_write_error(tmp_path, monkeypatch, capsys):
+    input_path = tmp_path / "message.bin"
+    output_path = tmp_path / "message.bin.enc"
+    input_path.write_bytes(b"plaintext")
+
+    def raise_write_error(path, data):
+        assert path == str(output_path)
+        assert data
+        raise OSError("simulated write error")
+
+    monkeypatch.setattr("cryptocore.cli.write_file_exclusive", raise_write_error)
+
+    result = main(automatic_output_arguments("--encrypt", input_path))
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err == f"error: cannot write output file: {output_path}\n"
+    assert not output_path.exists()

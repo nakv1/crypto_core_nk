@@ -4,8 +4,9 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
-from cryptocore.file_io import read_file, write_file
+from cryptocore.file_io import read_file, write_file, write_file_exclusive
 from cryptocore.modes.cbc import CiphertextLengthError as CbcCiphertextLengthError
 from cryptocore.modes.cbc import decrypt as decrypt_cbc
 from cryptocore.modes.cbc import encrypt as encrypt_cbc
@@ -80,7 +81,7 @@ def build_encryption_parser() -> argparse.ArgumentParser:
     parser.add_argument("--key", type=parse_key, required=True)
     parser.add_argument("--iv", type=parse_iv)
     parser.add_argument("--input", required=True, dest="input_path")
-    parser.add_argument("--output", required=True, dest="output_path")
+    parser.add_argument("--output", dest="output_path")
     return parser
 
 
@@ -93,6 +94,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--iv can only be used with --decrypt")
     if args.iv is not None and args.mode == "ecb":
         parser.error("--iv is not supported for ECB")
+
+    automatic_output = args.output_path is None
+    if automatic_output:
+        suffix = ".enc" if args.encrypt else ".dec"
+        args.output_path = f"{args.input_path}{suffix}"
 
     try:
         input_data = read_file(args.input_path)
@@ -110,6 +116,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except OSError:
         print(f"error: cannot read input file: {args.input_path}", file=sys.stderr)
+        return 1
+
+    if automatic_output and Path(args.output_path).exists():
+        print(
+            f"error: output file already exists: {args.output_path}",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -149,7 +162,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
-        write_file(args.output_path, output_data)
+        if automatic_output:
+            write_file_exclusive(args.output_path, output_data)
+        else:
+            write_file(args.output_path, output_data)
+    except FileExistsError:
+        print(
+            f"error: output file already exists: {args.output_path}",
+            file=sys.stderr,
+        )
+        return 1
     except FileNotFoundError:
         print(
             f"error: output directory does not exist: {args.output_path}",

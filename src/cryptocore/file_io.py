@@ -13,3 +13,19 @@ def write_file(path: str | Path, data: bytes) -> None:
     """Запись байтов в файл."""
     with Path(path).open("wb") as output_file:
         output_file.write(data)
+
+
+def write_file_exclusive(path: str | Path, data: bytes) -> None:
+    """Запись байтов только в новый файл с удалением при сбое записи."""
+    output_path = Path(path)
+    output_file = output_path.open("xb")
+
+    try:
+        with output_file:
+            output_file.write(data)
+    except Exception:
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+        raise
