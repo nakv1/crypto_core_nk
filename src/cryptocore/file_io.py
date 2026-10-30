@@ -3,6 +3,18 @@
 from pathlib import Path
 
 
+def iter_chunks(stream, chunk_size: int = 8192):
+    """Последовательное чтение непустых частей потока."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+
+    while True:
+        chunk = stream.read(chunk_size)
+        if chunk == b"":
+            return
+        yield chunk
+
+
 def read_file(path: str | Path) -> bytes:
     """Чтение всего файла в виде байтов."""
     with Path(path).open("rb") as input_file:

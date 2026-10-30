@@ -6,7 +6,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from cryptocore import csprng
-from cryptocore.file_io import read_file, write_file, write_file_exclusive
+from cryptocore.file_io import iter_chunks, read_file, write_file, write_file_exclusive
+from cryptocore.hash import SHA256, SHA3_256
 from cryptocore.modes.cbc import CiphertextLengthError as CbcCiphertextLengthError
 from cryptocore.modes.cbc import decrypt as decrypt_cbc
 from cryptocore.modes.cbc import encrypt as encrypt_cbc
@@ -34,6 +35,11 @@ MODE_DECRYPTORS = {
     "cfb": decrypt_cfb,
     "ofb": decrypt_ofb,
     "ctr": decrypt_ctr,
+}
+
+HASH_ALGORITHMS = {
+    "sha256": SHA256,
+    "sha3-256": SHA3_256,
 }
 
 
@@ -76,6 +82,7 @@ def build_encryption_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cryptocore",
         description="Encrypt or decrypt files with AES-128.",
+        epilog='For hashing use "cryptocore dgst" (see "cryptocore dgst --help").',
     )
     parser.add_argument("--algorithm", choices=["aes"], required=True)
     parser.add_argument(
@@ -93,8 +100,83 @@ def build_encryption_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_digest_parser() -> argparse.ArgumentParser:
+    """Создание парсера аргументов хеширования."""
+    parser = argparse.ArgumentParser(
+        prog="cryptocore dgst",
+        description="Calculate a file digest.",
+    )
+    parser.add_argument(
+        "--algorithm", choices=list(HASH_ALGORITHMS), required=True
+    )
+    parser.add_argument("--input", required=True, dest="input_path")
+    parser.add_argument("--output", dest="output_path")
+    return parser
+
+
+def _run_digest(argv: Sequence[str]) -> int:
+    """Вычисление хеша файла или стандартного ввода."""
+    parser = build_digest_parser()
+    args = parser.parse_args(argv)
+    hash_object = HASH_ALGORITHMS[args.algorithm]()
+
+    try:
+        if args.input_path == "-":
+            for chunk in iter_chunks(sys.stdin.buffer):
+                hash_object.update(chunk)
+        else:
+            with Path(args.input_path).open("rb") as input_file:
+                for chunk in iter_chunks(input_file):
+                    hash_object.update(chunk)
+    except FileNotFoundError:
+        print(
+            f"error: input file not found: {args.input_path}",
+            file=sys.stderr,
+        )
+        return 1
+    except PermissionError:
+        print(
+            f"error: permission denied while reading: {args.input_path}",
+            file=sys.stderr,
+        )
+        return 1
+    except OSError:
+        print(f"error: cannot read input file: {args.input_path}", file=sys.stderr)
+        return 1
+
+    result = f"{hash_object.hexdigest()}  {args.input_path}\n"
+    if args.output_path is None:
+        print(result, end="")
+        return 0
+
+    try:
+        write_file(args.output_path, result.encode("utf-8"))
+    except FileNotFoundError:
+        print(
+            f"error: output directory does not exist: {args.output_path}",
+            file=sys.stderr,
+        )
+        return 1
+    except PermissionError:
+        print(
+            f"error: permission denied while writing: {args.output_path}",
+            file=sys.stderr,
+        )
+        return 1
+    except OSError:
+        print(f"error: cannot write output file: {args.output_path}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Запуск CLI и возврат кода завершения."""
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "dgst":
+        return _run_digest(argv[1:])
+
     parser = build_encryption_parser()
     args = parser.parse_args(argv)
 
