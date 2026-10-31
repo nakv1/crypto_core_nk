@@ -274,7 +274,7 @@ python -c "from pathlib import Path; assert Path('a.bin').read_bytes() == Path('
 
 ## Проверка с OpenSSL
 
-Автоматизированные тесты проверяют CBC, CFB-128, OFB и CTR в обоих направлениях: CryptoCore → OpenSSL и OpenSSL → CryptoCore.
+Автоматизированные тесты проверяют ECB, CBC, CFB-128, OFB и CTR в обоих направлениях: CryptoCore → OpenSSL и OpenSSL → CryptoCore.
 
 ```powershell
 python -m pytest -q tests/test_openssl_compatibility.py
@@ -282,10 +282,13 @@ python -m pytest -q tests/test_openssl_compatibility.py
 
 | CryptoCore mode | OpenSSL cipher |
 | --- | --- |
+| `ecb` | `aes-128-ecb` |
 | `cbc` | `aes-128-cbc` |
 | `cfb` | `aes-128-cfb` |
 | `ofb` | `aes-128-ofb` |
 | `ctr` | `aes-128-ctr` |
+
+ECB не использует IV. ECB и CBC используют PKCS#7. В тестах совместимости ECB OpenSSL запускается без `-iv` и без `-nopad`.
 
 Ниже приведены полные сценарии для CBC. Для CFB/OFB/CTR используются те же команды с соответствующими значениями из таблицы. Если `openssl` отсутствует в `PATH`, в ручных командах можно указать полный путь к executable, например `& "C:\Program Files\Git\usr\bin\openssl.exe"` в PowerShell.
 

@@ -113,6 +113,73 @@ def openssl_path():
     return _find_openssl()
 
 
+def test_ecb_cryptocore_encrypt_openssl_decrypt(openssl_path, tmp_path):
+    plaintext_path = tmp_path / "plaintext.bin"
+    cryptocore_ciphertext_path = tmp_path / "cryptocore-ciphertext.bin"
+    openssl_plaintext_path = tmp_path / "openssl-plaintext.bin"
+    plaintext_path.write_bytes(PLAINTEXT)
+
+    cryptocore_result = main(
+        _cli_arguments(
+            "ecb",
+            "--encrypt",
+            plaintext_path,
+            cryptocore_ciphertext_path,
+        )
+    )
+
+    assert cryptocore_result == 0
+    command = [
+        openssl_path,
+        "enc",
+        "-aes-128-ecb",
+        "-d",
+        "-K",
+        KEY_HEX,
+        "-in",
+        str(cryptocore_ciphertext_path),
+        "-out",
+        str(openssl_plaintext_path),
+    ]
+    openssl_result = _run_process(command)
+
+    _assert_openssl_succeeded(openssl_result, command)
+    assert openssl_plaintext_path.read_bytes() == PLAINTEXT
+
+
+def test_ecb_openssl_encrypt_cryptocore_decrypt(openssl_path, tmp_path):
+    plaintext_path = tmp_path / "plaintext.bin"
+    openssl_ciphertext_path = tmp_path / "openssl-ciphertext.bin"
+    cryptocore_plaintext_path = tmp_path / "cryptocore-plaintext.bin"
+    plaintext_path.write_bytes(PLAINTEXT)
+
+    command = [
+        openssl_path,
+        "enc",
+        "-aes-128-ecb",
+        "-K",
+        KEY_HEX,
+        "-in",
+        str(plaintext_path),
+        "-out",
+        str(openssl_ciphertext_path),
+    ]
+    openssl_result = _run_process(command)
+    _assert_openssl_succeeded(openssl_result, command)
+
+    cryptocore_result = main(
+        _cli_arguments(
+            "ecb",
+            "--decrypt",
+            openssl_ciphertext_path,
+            cryptocore_plaintext_path,
+        )
+    )
+
+    assert cryptocore_result == 0
+    assert cryptocore_plaintext_path.read_bytes() == PLAINTEXT
+
+
 @pytest.mark.parametrize("mode", ["cbc", "cfb", "ofb", "ctr"])
 def test_cryptocore_encrypt_openssl_decrypt(
     mode, openssl_path, tmp_path, monkeypatch
