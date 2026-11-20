@@ -2,7 +2,7 @@
 
 from struct import unpack
 
-from cryptocore.hash._acceleration import get_processor
+from cryptocore.hash.acceleration import get_processor
 
 _MASK_32 = 0xFFFFFFFF
 
@@ -115,6 +115,7 @@ class SHA256:
 
         self._length += len(view)
         offset = 0
+        processor = get_processor("sha256") if len(view) >= 4096 else None
 
         if self._buffer:
             needed = self.block_size - len(self._buffer)
@@ -122,11 +123,13 @@ class SHA256:
             self._buffer.extend(view[:taken])
             offset = taken
             if len(self._buffer) == self.block_size:
-                self._process_block(self._buffer)
+                if processor is None:
+                    self._process_block(self._buffer)
+                else:
+                    self._state = processor(self._state, self._buffer)
                 self._buffer.clear()
 
         full_end = offset + ((len(view) - offset) // self.block_size) * self.block_size
-        processor = get_processor("sha256") if full_end - offset >= 8192 else None
         if processor is not None:
             self._state = processor(self._state, view[offset:full_end])
             offset = full_end

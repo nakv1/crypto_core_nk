@@ -17,4 +17,4 @@ def get_processor(algorithm: str):
 def _load_processor(algorithm: str):
     if find_spec("numba") is None:
         return None
-    return import_module(f"cryptocore.hash._accelerated_{algorithm}").process
+    return import_module(f"cryptocore.hash.accelerated_{algorithm}").process

@@ -1,5 +1,9 @@
 """Потоковая реализация SHA3-256 по FIPS 202."""
 
+from struct import unpack
+
+from cryptocore.hash.acceleration import get_processor
+
 _MASK_64 = 0xFFFFFFFFFFFFFFFF
 
 _ROUND_CONSTANTS = (
@@ -88,16 +92,23 @@ class SHA3_256:
             view = view.cast("B")
 
         offset = 0
+        processor = get_processor("sha3") if len(view) >= 4096 else None
         if self._buffer:
             needed = self.block_size - len(self._buffer)
             taken = min(needed, len(view))
             self._buffer.extend(view[:taken])
             offset = taken
             if len(self._buffer) == self.block_size:
-                self._absorb_block(self._buffer)
+                if processor is None:
+                    self._absorb_block(self._buffer)
+                else:
+                    self._state = processor(self._state, self._buffer)
                 self._buffer.clear()
 
         full_end = offset + ((len(view) - offset) // self.block_size) * self.block_size
+        if processor is not None:
+            self._state = processor(self._state, view[offset:full_end])
+            offset = full_end
         while offset < full_end:
             self._absorb_block(view[offset : offset + self.block_size])
             offset += self.block_size
@@ -131,9 +142,7 @@ class SHA3_256:
 
     def _absorb_block(self, block: bytes | bytearray | memoryview) -> None:
         """Поглощение одного 136-байтного блока."""
-        for index in range(self.block_size // 8):
-            start = index * 8
-            lane = int.from_bytes(block[start : start + 8], "little")
+        for index, lane in enumerate(unpack("<17Q", block)):
             self._state[index] ^= lane
         self._keccak_f()
 
