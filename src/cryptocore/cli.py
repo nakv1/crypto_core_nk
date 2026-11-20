@@ -9,7 +9,7 @@ from secrets import compare_digest
 from cryptocore import csprng
 from cryptocore.file_io import iter_chunks, read_file, write_file, write_file_exclusive
 from cryptocore.hash import SHA256, SHA3_256
-from cryptocore.mac import HMAC
+from cryptocore.mac import CMAC, HMAC
 from cryptocore.mac.verification import read_expected_mac
 from cryptocore.modes.cbc import CiphertextLengthError as CbcCiphertextLengthError
 from cryptocore.modes.cbc import decrypt as decrypt_cbc
@@ -117,9 +117,11 @@ def build_digest_parser() -> argparse.ArgumentParser:
         description="Calculate a file digest.",
     )
     parser.add_argument(
-        "--algorithm", choices=list(HASH_ALGORITHMS)
+        "--algorithm", choices=[*HASH_ALGORITHMS, "aes"]
     )
-    parser.add_argument("--hmac", action="store_true", help="calculate HMAC-SHA256")
+    mac_mode = parser.add_mutually_exclusive_group()
+    mac_mode.add_argument("--hmac", action="store_true", help="calculate HMAC-SHA256")
+    mac_mode.add_argument("--cmac", action="store_true", help="calculate AES-128-CMAC")
     parser.add_argument("--key", type=parse_mac_key, help="MAC key in hexadecimal")
     parser.add_argument("--input", required=True, dest="input_path")
     destination = parser.add_mutually_exclusive_group()
@@ -132,18 +134,26 @@ def _run_digest(argv: Sequence[str]) -> int:
     """Вычисление хеша файла или стандартного ввода."""
     parser = build_digest_parser()
     args = parser.parse_args(argv)
-    if args.hmac:
+    is_mac = args.hmac or args.cmac
+    if is_mac:
         if args.key is None:
-            parser.error("--key is required with --hmac")
-        if args.algorithm not in (None, "sha256"):
-            parser.error("--hmac supports only --algorithm sha256")
-        hash_object = HMAC(args.key)
+            parser.error("--key is required with --hmac or --cmac")
+        if args.hmac:
+            if args.algorithm not in (None, "sha256"):
+                parser.error("--hmac supports only --algorithm sha256")
+            hash_object = HMAC(args.key)
+        else:
+            if args.algorithm not in (None, "aes"):
+                parser.error("--cmac supports only --algorithm aes")
+            if len(args.key) != 16:
+                parser.error("AES-CMAC key must contain exactly 32 hexadecimal characters")
+            hash_object = CMAC(args.key)
     else:
         if args.verify_path is not None:
-            parser.error("--verify requires --hmac")
+            parser.error("--verify requires --hmac or --cmac")
         if args.key is not None:
-            parser.error("--key requires --hmac")
-        if args.algorithm is None:
+            parser.error("--key requires --hmac or --cmac")
+        if args.algorithm not in HASH_ALGORITHMS:
             parser.error("--algorithm is required")
         hash_object = HASH_ALGORITHMS[args.algorithm]()
 
@@ -172,9 +182,9 @@ def _run_digest(argv: Sequence[str]) -> int:
         return 1
 
     if args.verify_path is not None:
-        return _verify_mac(args.verify_path, hash_object.digest(), "HMAC")
+        return _verify_mac(args.verify_path, hash_object.digest(), "HMAC" if args.hmac else "CMAC")
 
-    separator = " " if args.hmac else "  "
+    separator = " " if is_mac else "  "
     result = f"{hash_object.hexdigest()}{separator}{args.input_path}\n"
     if args.output_path is None:
         print(result, end="")
