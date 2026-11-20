@@ -8,6 +8,7 @@ from pathlib import Path
 from cryptocore import csprng
 from cryptocore.file_io import iter_chunks, read_file, write_file, write_file_exclusive
 from cryptocore.hash import SHA256, SHA3_256
+from cryptocore.mac import HMAC
 from cryptocore.modes.cbc import CiphertextLengthError as CbcCiphertextLengthError
 from cryptocore.modes.cbc import decrypt as decrypt_cbc
 from cryptocore.modes.cbc import encrypt as encrypt_cbc
@@ -69,6 +70,13 @@ def parse_iv(value: str) -> bytes:
     return bytes.fromhex(value)
 
 
+def parse_mac_key(value: str) -> bytes:
+    """Разбор hex-ключа MAC без ограничения длины AES-128."""
+    if len(value) % 2 or any(c not in "0123456789abcdefABCDEF" for c in value):
+        raise argparse.ArgumentTypeError("MAC key must contain an even number of hexadecimal characters")
+    return bytes.fromhex(value)
+
+
 def is_predictable_key(key: bytes) -> bool:
     """Проверка ключа на простые предсказуемые последовательности."""
     repeated = len(set(key)) == 1
@@ -107,8 +115,10 @@ def build_digest_parser() -> argparse.ArgumentParser:
         description="Calculate a file digest.",
     )
     parser.add_argument(
-        "--algorithm", choices=list(HASH_ALGORITHMS), required=True
+        "--algorithm", choices=list(HASH_ALGORITHMS)
     )
+    parser.add_argument("--hmac", action="store_true", help="calculate HMAC-SHA256")
+    parser.add_argument("--key", type=parse_mac_key, help="MAC key in hexadecimal")
     parser.add_argument("--input", required=True, dest="input_path")
     parser.add_argument("--output", dest="output_path")
     return parser
@@ -118,7 +128,18 @@ def _run_digest(argv: Sequence[str]) -> int:
     """Вычисление хеша файла или стандартного ввода."""
     parser = build_digest_parser()
     args = parser.parse_args(argv)
-    hash_object = HASH_ALGORITHMS[args.algorithm]()
+    if args.hmac:
+        if args.key is None:
+            parser.error("--key is required with --hmac")
+        if args.algorithm not in (None, "sha256"):
+            parser.error("--hmac supports only --algorithm sha256")
+        hash_object = HMAC(args.key)
+    else:
+        if args.key is not None:
+            parser.error("--key requires --hmac")
+        if args.algorithm is None:
+            parser.error("--algorithm is required")
+        hash_object = HASH_ALGORITHMS[args.algorithm]()
 
     try:
         if args.input_path == "-":
@@ -144,7 +165,8 @@ def _run_digest(argv: Sequence[str]) -> int:
         print(f"error: cannot read input file: {args.input_path}", file=sys.stderr)
         return 1
 
-    result = f"{hash_object.hexdigest()}  {args.input_path}\n"
+    separator = " " if args.hmac else "  "
+    result = f"{hash_object.hexdigest()}{separator}{args.input_path}\n"
     if args.output_path is None:
         print(result, end="")
         return 0
