@@ -1,6 +1,7 @@
 """Замеряет скорость хеширования CryptoCore и системных утилит."""
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from importlib.metadata import PackageNotFoundError, version
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -182,12 +184,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="MIB",
         help="file sizes in MiB (default: 1 10)",
     )
+    parser.add_argument("--pure-python", action="store_true", help="disable optional JIT compilation")
+    parser.add_argument("--json-output", type=Path, help="save measurements and interpreter metadata")
     args = parser.parse_args(argv)
+
+    try:
+        numba_version = version("numba")
+    except PackageNotFoundError:
+        numba_version = None
+    pure_python = args.pure_python or os.environ.get("CRYPTOCORE_PURE_PYTHON") == "1"
+    report = {
+        "python": sys.version, "executable": sys.executable,
+        "numba": numba_version, "pure_python": pure_python, "measurements": [],
+    }
 
     try:
         sha256sum = _find_sha256sum()
         sha3sum = _find_sha3sum()
         openssl = None if sha3sum else _find_openssl()
+
+        print(f"Python: {sys.version.split()[0]}; Numba: {numba_version}; pure Python: {pure_python}", flush=True)
 
         print(f"SHA-256 reference: {sha256sum}", flush=True)
         if sha3sum:
@@ -205,6 +221,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         project_root = Path(__file__).resolve().parents[1]
         crypto_env = _crypto_env(project_root)
+        if pure_python:
+            crypto_env["CRYPTOCORE_PURE_PYTHON"] = "1"
 
         with tempfile.TemporaryDirectory(prefix="cryptocore_benchmark_") as temp:
             temp_path = Path(temp)
@@ -259,12 +277,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                     crypto_speed = size_mib / crypto_time
                     reference_speed = size_mib / reference_time
+                    report["measurements"].append({
+                        "algorithm": algorithm, "size_mib": size_mib,
+                        "cryptocore_seconds": crypto_time,
+                        "cryptocore_mib_per_second": crypto_speed,
+                        "reference": reference_name, "reference_seconds": reference_time,
+                        "reference_mib_per_second": reference_speed, "hash": crypto_hash,
+                    })
                     print(
                         f"{algorithm} | {size_mib} | {crypto_time:.6f} | "
                         f"{crypto_speed:.3f} | {reference_name} | "
                         f"{reference_time:.6f} | {reference_speed:.3f} | yes",
                         flush=True,
                     )
+        if args.json_output is not None:
+            args.json_output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     except (OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
