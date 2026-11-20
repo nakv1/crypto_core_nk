@@ -4,11 +4,13 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from secrets import compare_digest
 
 from cryptocore import csprng
 from cryptocore.file_io import iter_chunks, read_file, write_file, write_file_exclusive
 from cryptocore.hash import SHA256, SHA3_256
 from cryptocore.mac import HMAC
+from cryptocore.mac.verification import read_expected_mac
 from cryptocore.modes.cbc import CiphertextLengthError as CbcCiphertextLengthError
 from cryptocore.modes.cbc import decrypt as decrypt_cbc
 from cryptocore.modes.cbc import encrypt as encrypt_cbc
@@ -120,7 +122,9 @@ def build_digest_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hmac", action="store_true", help="calculate HMAC-SHA256")
     parser.add_argument("--key", type=parse_mac_key, help="MAC key in hexadecimal")
     parser.add_argument("--input", required=True, dest="input_path")
-    parser.add_argument("--output", dest="output_path")
+    destination = parser.add_mutually_exclusive_group()
+    destination.add_argument("--output", dest="output_path")
+    destination.add_argument("--verify", dest="verify_path", help="verify a saved MAC")
     return parser
 
 
@@ -135,6 +139,8 @@ def _run_digest(argv: Sequence[str]) -> int:
             parser.error("--hmac supports only --algorithm sha256")
         hash_object = HMAC(args.key)
     else:
+        if args.verify_path is not None:
+            parser.error("--verify requires --hmac")
         if args.key is not None:
             parser.error("--key requires --hmac")
         if args.algorithm is None:
@@ -165,6 +171,9 @@ def _run_digest(argv: Sequence[str]) -> int:
         print(f"error: cannot read input file: {args.input_path}", file=sys.stderr)
         return 1
 
+    if args.verify_path is not None:
+        return _verify_mac(args.verify_path, hash_object.digest(), "HMAC")
+
     separator = " " if args.hmac else "  "
     result = f"{hash_object.hexdigest()}{separator}{args.input_path}\n"
     if args.output_path is None:
@@ -190,6 +199,20 @@ def _run_digest(argv: Sequence[str]) -> int:
         return 1
 
     return 0
+
+
+def _verify_mac(path: str, actual: bytes, label: str) -> int:
+    """Проверяет полный MAC и сообщает только об общем результате."""
+    try:
+        expected = read_expected_mac(path, len(actual))
+    except (OSError, UnicodeError, ValueError) as error:
+        print(f"error: cannot read expected MAC: {error}", file=sys.stderr)
+        return 1
+    if compare_digest(actual, expected):
+        print(f"[OK] {label} verification successful")
+        return 0
+    print(f"[ERROR] {label} verification failed", file=sys.stderr)
+    return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
