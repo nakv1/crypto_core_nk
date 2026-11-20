@@ -61,3 +61,50 @@ def test_hmac_explicit_sha256(tmp_path, capsys):
     path.write_bytes(b"abc")
     assert main(arguments(path) + ["--algorithm", "sha256"]) == 0
     assert len(capsys.readouterr().out.split()[0]) == 64
+
+
+@pytest.mark.parametrize("mac_flag", ["--hmac", "--cmac"])
+def test_mac_reads_in_bounded_chunks(mac_flag, monkeypatch, capsys):
+    data = bytes(range(256)) * 80
+    sizes = []
+
+    class Stream:
+        def __init__(self):
+            self.buffer = io.BytesIO(data)
+
+        def read(self, size):
+            assert 0 < size <= 8192
+            sizes.append(size)
+            return self.buffer.read(size)
+
+    class Stdin:
+        buffer = Stream()
+
+    monkeypatch.setattr("cryptocore.cli.sys.stdin", Stdin())
+    command = arguments("-")
+    command[1] = mac_flag
+    assert main(command) == 0
+    assert len(sizes) >= 3
+    assert capsys.readouterr().err == ""
+
+
+def test_partial_mac_read_failure_preserves_output(tmp_path, monkeypatch, capsys):
+    output = tmp_path / "mac.txt"
+    output.write_bytes(b"keep existing tag")
+
+    class Stream:
+        calls = 0
+
+        def read(self, size):
+            self.calls += 1
+            if self.calls == 1:
+                return b"first chunk"
+            raise OSError("simulated read failure")
+
+    class Stdin:
+        buffer = Stream()
+
+    monkeypatch.setattr("cryptocore.cli.sys.stdin", Stdin())
+    assert main(arguments("-") + ["--output", str(output)]) == 1
+    assert output.read_bytes() == b"keep existing tag"
+    assert "error:" in capsys.readouterr().err
