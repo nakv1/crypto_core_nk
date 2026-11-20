@@ -1,5 +1,9 @@
 """Потоковая реализация SHA-256 по FIPS 180-4."""
 
+from struct import unpack
+
+from cryptocore.hash._acceleration import get_processor
+
 _MASK_32 = 0xFFFFFFFF
 
 _INITIAL_STATE = (
@@ -122,6 +126,10 @@ class SHA256:
                 self._buffer.clear()
 
         full_end = offset + ((len(view) - offset) // self.block_size) * self.block_size
+        processor = get_processor("sha256") if full_end - offset >= 8192 else None
+        if processor is not None:
+            self._state = processor(self._state, view[offset:full_end])
+            offset = full_end
         while offset < full_end:
             self._process_block(view[offset : offset + self.block_size])
             offset += self.block_size
@@ -152,10 +160,7 @@ class SHA256:
 
     def _process_block(self, block: bytes | bytearray | memoryview) -> None:
         """Сжатие одного 64-байтного блока."""
-        words = [
-            int.from_bytes(block[index : index + 4], "big")
-            for index in range(0, self.block_size, 4)
-        ]
+        words = list(unpack(">16I", block))
 
         for index in range(16, 64):
             word_15 = words[index - 15]
