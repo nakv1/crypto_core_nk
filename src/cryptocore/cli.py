@@ -7,6 +7,9 @@ from pathlib import Path
 from secrets import compare_digest
 
 from cryptocore import csprng
+from cryptocore.aead import AuthenticationError
+from cryptocore.aead.files import decrypt_file as decrypt_gcm_file
+from cryptocore.aead.files import encrypt_file as encrypt_gcm_file
 from cryptocore.file_io import iter_chunks, read_file, write_file, write_file_exclusive
 from cryptocore.hash import SHA256, SHA3_256
 from cryptocore.mac import CMAC, HMAC
@@ -79,6 +82,19 @@ def parse_mac_key(value: str) -> bytes:
     return bytes.fromhex(value)
 
 
+def parse_aad(value: str) -> bytes:
+    """Строгий hex, включая пустую строку, без пробелов и префикса 0x."""
+    if len(value) % 2 or any(c not in "0123456789abcdefABCDEF" for c in value):
+        raise argparse.ArgumentTypeError("AAD must contain an even number of hexadecimal characters")
+    return bytes.fromhex(value)
+
+
+def parse_nonce(value: str) -> bytes:
+    if len(value) != 24 or any(c not in "0123456789abcdefABCDEF" for c in value):
+        raise argparse.ArgumentTypeError("GCM nonce must contain exactly 24 hexadecimal characters")
+    return bytes.fromhex(value)
+
+
 def is_predictable_key(key: bytes) -> bool:
     """Проверка ключа на простые предсказуемые последовательности."""
     repeated = len(set(key)) == 1
@@ -96,7 +112,7 @@ def build_encryption_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--algorithm", choices=["aes"], required=True)
     parser.add_argument(
-        "--mode", choices=["ecb", "cbc", "cfb", "ofb", "ctr"], required=True
+        "--mode", choices=["ecb", "cbc", "cfb", "ofb", "ctr", "gcm"], required=True
     )
 
     operation = parser.add_mutually_exclusive_group(required=True)
@@ -104,7 +120,12 @@ def build_encryption_parser() -> argparse.ArgumentParser:
     operation.add_argument("--decrypt", action="store_true")
 
     parser.add_argument("--key", type=parse_key)
-    parser.add_argument("--iv", type=parse_iv)
+    initialization = parser.add_mutually_exclusive_group()
+    initialization.add_argument("--iv", help="IV for decryption; GCM alias for --nonce")
+    initialization.add_argument("--nonce", type=parse_nonce, help="12-byte GCM nonce for decryption")
+    associated = parser.add_mutually_exclusive_group()
+    associated.add_argument("--aad", type=parse_aad, help="GCM associated data in hexadecimal")
+    associated.add_argument("--aad-file", help="read binary GCM associated data in chunks")
     parser.add_argument("--input", required=True, dest="input_path")
     parser.add_argument("--output", dest="output_path")
     return parser
@@ -225,6 +246,42 @@ def _verify_mac(path: str, actual: bytes, label: str) -> int:
     return 1
 
 
+def _file_aad(path):
+    with Path(path).open("rb") as source:
+        yield from iter_chunks(source)
+
+
+def _run_gcm(args, automatic_output):
+    if automatic_output and Path(args.output_path).exists():
+        print(f"error: output file already exists: {args.output_path}", file=sys.stderr)
+        return 1
+    aad = _file_aad(args.aad_file) if args.aad_file is not None else (args.aad or b"")
+    generated = args.key is None
+    try:
+        if generated:
+            args.key = csprng.generate_random_bytes(16)
+        elif is_predictable_key(args.key):
+            print("warning: key looks predictable", file=sys.stderr)
+        if args.encrypt:
+            encrypt_gcm_file(args.key, args.input_path, args.output_path, aad,
+                             exclusive=automatic_output)
+        else:
+            decrypt_gcm_file(args.key, args.input_path, args.output_path, aad,
+                             nonce=args.nonce if args.nonce is not None else args.iv,
+                             exclusive=automatic_output)
+    except AuthenticationError:
+        print("[ERROR] Authentication failed: wrong key, AAD, or tampered data", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, csprng.RandomGenerationError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    if generated:
+        print(f"[INFO] Generated random key: {args.key.hex()}")
+    if args.decrypt:
+        print("[SUCCESS] Decryption completed successfully")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Запуск CLI и возврат кода завершения."""
     if argv is None:
@@ -237,6 +294,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.decrypt and args.key is None:
         parser.error("--key is required with --decrypt")
+    if args.nonce is not None:
+        if args.mode != "gcm":
+            parser.error("--nonce is supported only for GCM")
+        if args.encrypt:
+            parser.error("--nonce can only be used with --decrypt")
+    if args.mode != "gcm" and (args.aad is not None or args.aad_file is not None):
+        parser.error("--aad and --aad-file require --mode gcm")
+    if args.iv is not None:
+        try:
+            args.iv = parse_nonce(args.iv) if args.mode == "gcm" else parse_iv(args.iv)
+        except argparse.ArgumentTypeError as error:
+            parser.error(str(error))
     if args.iv is not None and args.encrypt:
         parser.error("--iv can only be used with --decrypt")
     if args.iv is not None and args.mode == "ecb":
@@ -246,6 +315,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if automatic_output:
         suffix = ".enc" if args.encrypt else ".dec"
         args.output_path = f"{args.input_path}{suffix}"
+
+    if args.mode == "gcm":
+        return _run_gcm(args, automatic_output)
 
     try:
         input_data = read_file(args.input_path)

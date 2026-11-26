@@ -1,5 +1,8 @@
 """Чтение и запись бинарных файлов."""
 
+import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -41,3 +44,23 @@ def write_file_exclusive(path: str | Path, data: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+@contextmanager
+def atomic_output(path: str | Path, exclusive: bool = False):
+    """Публикует готовый файл целиком; при ошибке сохраняет прежний результат.
+
+    Временный файл расположен рядом с результатом. Для exclusive используется
+    hard link: существующий путь не перезаписывается даже при гонке процессов.
+    """
+    path = Path(path)
+    descriptor, temporary = tempfile.mkstemp(prefix=".cryptocore-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            yield output
+        if exclusive:
+            os.link(temporary, path)
+        else:
+            os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
