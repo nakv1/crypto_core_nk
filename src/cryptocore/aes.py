@@ -5,6 +5,20 @@ from Crypto.Cipher import AES
 BLOCK_SIZE = 16
 
 
+class AES128:
+    """Повторно используемый одноблочный примитив с одним расписанием ключа."""
+
+    def __init__(self, key: bytes):
+        if len(key) != BLOCK_SIZE:
+            raise ValueError("AES-128 key must be exactly 16 bytes")
+        self._cipher = AES.new(key, AES.MODE_ECB)
+
+    def encrypt_block(self, block: bytes) -> bytes:
+        if len(block) != BLOCK_SIZE:
+            raise ValueError("AES block must be exactly 16 bytes")
+        return self._cipher.encrypt(block)
+
+
 def encrypt_block(key: bytes, block: bytes) -> bytes:
     """Шифрование одного 16-байтного блока AES-128."""
     if len(key) != BLOCK_SIZE:
