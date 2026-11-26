@@ -1,6 +1,7 @@
 """Интерфейс командной строки CryptoCore."""
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,8 +11,10 @@ from cryptocore import csprng
 from cryptocore.aead import AuthenticationError
 from cryptocore.aead.files import decrypt_file as decrypt_gcm_file
 from cryptocore.aead.files import encrypt_file as encrypt_gcm_file
-from cryptocore.file_io import iter_chunks, read_file, write_file, write_file_exclusive
+from cryptocore.file_io import atomic_output, iter_chunks, read_file, write_file, write_file_exclusive
 from cryptocore.hash import SHA256, SHA3_256
+from cryptocore.kdf import pbkdf2_hmac_sha256
+from cryptocore.kdf._validation import MAX_KEY_BYTES
 from cryptocore.mac import CMAC, HMAC
 from cryptocore.mac.verification import read_expected_mac
 from cryptocore.modes.cbc import CiphertextLengthError as CbcCiphertextLengthError
@@ -108,7 +111,7 @@ def build_encryption_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cryptocore",
         description="Encrypt or decrypt files with AES-128.",
-        epilog='For hashing use "cryptocore dgst" (see "cryptocore dgst --help").',
+        epilog='For hashing use "cryptocore dgst"; for key derivation use "cryptocore derive".',
     )
     parser.add_argument("--algorithm", choices=["aes"], required=True)
     parser.add_argument(
@@ -251,6 +254,78 @@ def _file_aad(path):
         yield from iter_chunks(source)
 
 
+def _positive_argument(value):
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _derive_length(value):
+    parsed = _positive_argument(value)
+    if parsed > MAX_KEY_BYTES:
+        raise argparse.ArgumentTypeError("length exceeds the 32-bit block counter limit")
+    return parsed
+
+
+def _parse_salt(value):
+    if len(value) % 2 or any(c not in "0123456789abcdefABCDEF" for c in value):
+        raise argparse.ArgumentTypeError("salt must contain an even number of hexadecimal characters")
+    return bytes.fromhex(value)
+
+
+def build_derive_parser():
+    parser = argparse.ArgumentParser(prog="cryptocore derive", description="Derive a key with PBKDF2-HMAC-SHA256.")
+    password = parser.add_mutually_exclusive_group(required=True)
+    password.add_argument("--password", help="password encoded as UTF-8")
+    password.add_argument("--password-file", help="read exact binary password bytes, including newlines")
+    password.add_argument("--password-env", help="name of an environment variable containing the password")
+    parser.add_argument("--salt", type=_parse_salt, help="hexadecimal salt; default: random 16 bytes")
+    parser.add_argument("--iterations", type=_positive_argument, default=100000)
+    parser.add_argument("--length", type=_derive_length, default=32)
+    parser.add_argument("--algorithm", choices=["pbkdf2"], default="pbkdf2")
+    parser.add_argument("--output", dest="output_path", help="write raw key bytes; stdout still includes key and salt")
+    return parser
+
+
+def _run_derive(argv):
+    args = build_derive_parser().parse_args(argv)
+    password = bytearray()
+    try:
+        if args.password_file is not None:
+            password.extend(read_file(args.password_file))
+        elif args.password_env is not None:
+            value = os.environ.get(args.password_env)
+            if value is None:
+                raise ValueError("password environment variable is not set")
+            password.extend(value.encode("utf-8"))
+            del value
+        else:
+            password.extend(args.password.encode("utf-8"))
+        args.password = None
+        salt = args.salt if args.salt is not None else csprng.generate_random_bytes(16)
+        key = pbkdf2_hmac_sha256(password, salt, args.iterations, args.length)
+    except (OSError, ValueError, UnicodeError, csprng.RandomGenerationError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    finally:
+        # Удаляет нашу изменяемую копию; Python/argv/env могут хранить другие копии.
+        password[:] = bytes(len(password))
+        args.password = None
+    if args.output_path is not None:
+        try:
+            with atomic_output(args.output_path) as output:
+                output.write(key)
+        except OSError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+    print(f"{key.hex()}  {salt.hex()}")
+    return 0
+
+
 def _run_gcm(args, automatic_output):
     if automatic_output and Path(args.output_path).exists():
         print(f"error: output file already exists: {args.output_path}", file=sys.stderr)
@@ -288,6 +363,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv = sys.argv[1:]
     if argv and argv[0] == "dgst":
         return _run_digest(argv[1:])
+    if argv and argv[0] == "derive":
+        return _run_derive(argv[1:])
 
     parser = build_encryption_parser()
     args = parser.parse_args(argv)
