@@ -24,6 +24,9 @@ class HMAC:
         self._inner = SHA256()
         self._inner.update(bytes(byte ^ 0x36 for byte in key))
         self._outer_pad = bytes(byte ^ 0x5C for byte in key)
+        self._inner_base = self._inner._copy()
+        self._outer_base = SHA256()
+        self._outer_base.update(self._outer_pad)
 
     def update(self, data: bytes | bytearray | memoryview) -> None:
         """Добавляет часть сообщения без накопления файла в памяти."""
@@ -31,8 +34,7 @@ class HMAC:
 
     def digest(self) -> bytes:
         """Возвращает MAC без изменения состояния сообщения."""
-        outer = SHA256()
-        outer.update(self._outer_pad)
+        outer = self._outer_base._copy()
         outer.update(self._inner.digest())
         return outer.digest()
 
@@ -42,11 +44,16 @@ class HMAC:
 
     def compute(self, message: bytes | bytearray | memoryview) -> str:
         """Однократно вычисляет MAC отдельного сообщения с тем же ключом."""
-        inner = SHA256()
-        # Восстанавливаем ipad из opad: (K xor 5c) xor 5c xor 36.
-        inner.update(bytes(byte ^ 0x6A for byte in self._outer_pad))
+        return self.digest_message(message).hex()
+
+    def digest_message(self, message: bytes | bytearray | memoryview) -> bytes:
+        """MAC отдельного сообщения с повторным использованием состояний ipad/opad.
+
+        Рабочий поток update/digest не меняется. Нужен в том числе как PRF
+        для PBKDF2 и иерархии ключей, без повторного хеширования ключа.
+        """
+        inner = self._inner_base._copy()
         inner.update(message)
-        outer = SHA256()
-        outer.update(self._outer_pad)
+        outer = self._outer_base._copy()
         outer.update(inner.digest())
-        return outer.hexdigest()
+        return outer.digest()
