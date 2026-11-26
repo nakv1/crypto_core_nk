@@ -1,8 +1,8 @@
 # CryptoCore
 
-CryptoCore — учебная консольная утилита для шифрования, расшифрования, хеширования и проверки подлинности текстовых и бинарных файлов. Поддерживаются AES-128, режимы ECB, CBC, CFB-128, OFB и CTR, HMAC-SHA256 и AES-CMAC, а также системная генерация ключей и IV.
+CryptoCore — учебная консольная утилита для шифрования, расшифрования, хеширования и проверки подлинности текстовых и бинарных файлов. Поддерживаются AES-128, режимы ECB, CBC, CFB-128, OFB, CTR и GCM, HMAC-SHA256, AES-CMAC и библиотечная схема Encrypt-then-MAC, а также системная генерация ключей, IV и nonce.
 
-Одноблочный примитив AES предоставляется PyCryptodome. Логика режимов ECB/CBC/CFB/OFB/CTR и дополнение PKCS#7 реализованы в проекте. OpenSSL используется как независимый инструмент проверки совместимости.
+Одноблочный примитив AES предоставляется PyCryptodome. Логика режимов ECB/CBC/CFB/OFB/CTR/GCM, GHASH и дополнение PKCS#7 реализованы в проекте. OpenSSL используется как независимый инструмент проверки совместимости.
 
 ## Реализовано
 
@@ -20,6 +20,10 @@ CryptoCore — учебная консольная утилита для шиф�
 - потоковое хеширование файлов командой `cryptocore dgst`;
 - собственные потоковые HMAC-SHA256 и AES-128-CMAC;
 - генерация MAC и проверка сохранённых значений через `dgst --verify`;
+- собственный AES-128-GCM с AAD, 12-байтным nonce и полным 16-байтным тегом;
+- потоковая обработка файлов и бинарного AAD в GCM;
+- Encrypt-then-MAC на AES-CTR и HMAC-SHA256 с разделением ключевого материала;
+- проверка аутентификации до расшифрования и записи открытого текста;
 - необязательная JIT-компиляция собственных раундов SHA для больших файлов;
 - модульные, интеграционные и OpenSSL compatibility tests.
 
@@ -32,6 +36,8 @@ CryptoCore — учебная консольная утилита для шиф�
 - Numba 0.61+ — необязательный компилятор для ускорения собственных реализаций SHA; устанавливается через extra `speed`, вместе с NumPy и llvmlite
 
 Тесты совместимости ищут OpenSSL сначала по пути из `CRYPTOCORE_OPENSSL`, затем в `PATH`, а на Windows — в `C:\Program Files\Git\usr\bin\openssl.exe`. Если OpenSSL действительно отсутствует, эти тесты пропускаются, а остальные тесты проекта продолжают выполняться.
+
+Для GCM используется библиотека OpenSSL `libcrypto` через EVP API: команда `openssl enc` не поддерживает GCM. Путь к библиотеке можно задать в `CRYPTOCORE_LIBCRYPTO`; без него проверяется системный поиск и стандартные пути Git for Windows. Отсутствие библиотеки пропускает только тесты EVP, неверный явный путь считается ошибкой тестирования. В рабочей реализации GCM библиотечные режимы не используются.
 
 ## Установка
 
@@ -76,6 +82,7 @@ Remove-Item Env:CRYPTOCORE_PURE_PYTHON
 | `cfb` | нет | 16 байт | Используется CFB-128 |
 | `ofb` | нет | 16 байт | Длина данных не изменяется |
 | `ctr` | нет | 16 байт | IV используется как начальный 128-битный счётчик |
+| `gcm` | нет | nonce 12 байт | Аутентификация ciphertext и AAD, тег 16 байт |
 
 ## Использование
 
@@ -168,11 +175,14 @@ cryptocore --algorithm aes --mode cbc --decrypt --key 2b7e151628aed2a6abf7158809
 | Аргумент | Описание |
 | --- | --- |
 | `--algorithm` | Алгоритм шифрования; поддерживается `aes` |
-| `--mode` | Режим: `ecb`, `cbc`, `cfb`, `ofb` или `ctr` |
+| `--mode` | Режим: `ecb`, `cbc`, `cfb`, `ofb`, `ctr` или `gcm` |
 | `--encrypt` | Шифрование входного файла |
 | `--decrypt` | Расшифрование входного файла |
 | `--key` | Ключ AES-128: ровно 32 шестнадцатеричных символа; необязателен для encrypt, обязателен для decrypt |
-| `--iv` | IV: ровно 32 шестнадцатеричных символа; только для decrypt новых режимов |
+| `--iv` | Только decrypt: 32 hex-символа для CBC/CFB/OFB/CTR; в GCM — псевдоним `--nonce`, 24 hex-символа |
+| `--nonce` | Только GCM decrypt: 12 байт как 24 hex-символа; вход без nonce-заголовка |
+| `--aad` | Только GCM: AAD как hex-строка, по умолчанию пустая |
+| `--aad-file` | Только GCM: читать бинарный AAD из файла по частям; несовместим с `--aad` |
 | `--input` | Путь к входному файлу |
 | `--output` | Путь к выходному файлу; без аргумента добавляется `.enc` или `.dec` |
 
@@ -263,6 +273,87 @@ cryptocore dgst --cmac --key 2b7e151628aed2a6abf7158809cf4f3c --input message.tx
 
 `--verify` разрешён только для MAC и взаимоисключается с `--output`. Сам файл с ожидаемым MAC при проверке не изменяется.
 
+## Аутентифицированное шифрование: AES-GCM
+
+AEAD объединяет конфиденциальность и проверку подлинности. GCM шифрует содержимое и аутентифицирует его вместе с AAD (associated data). AAD может содержать открытые метаданные: он не шифруется и не записывается в выходной файл. Для расшифрования нужны те же байты AAD, что использовались при шифровании.
+
+GCM реализован по [NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final). Собственные GHASH и GCTR используют одноблочный AES-128. Умножение в `GF(2^128)` использует многочлен `x^128 + x^7 + x^2 + x + 1` и предвычисленную таблицу для ключа GHASH. Счётчик GCTR увеличивает только младшие 32 бита блока. Padding PKCS#7 не применяется.
+
+При каждом шифровании CLI генерирует новый случайный 12-байтный nonce через CSPRNG. Пользовательский nonce при шифровании запрещён. Формат файла:
+
+```text
+nonce (12 байт) || ciphertext || tag (16 байт)
+```
+
+Длина файла увеличивается на 28 байт; даже пустой файл содержит nonce и тег. Пример полного цикла с AAD:
+
+```powershell
+cryptocore --algorithm aes --mode gcm --encrypt --key 2b7e151628aed2a6abf7158809cf4f3c --input message.txt --output message.gcm --aad aabbccddeeff
+cryptocore --algorithm aes --mode gcm --decrypt --key 2b7e151628aed2a6abf7158809cf4f3c --input message.gcm --output restored.txt --aad aabbccddeeff
+```
+
+При успешном расшифровании печатается `[SUCCESS] Decryption completed successfully`, код возврата — `0`. Если ключ, AAD, nonce, ciphertext или тег неверны, результат проверки — отказ:
+
+```text
+[ERROR] Authentication failed: wrong key, AAD, or tampered data
+```
+
+Код возврата — `1`. Открытый текст не вычисляется и не выводится, выходной файл не создаётся, существующий выходной файл сохраняется. Это означает полный отказ операции; программа не пытается вернуть частично расшифрованные данные. Некорректные аргументы, например `--aad wrongaad123`, возвращают `2`: AAD должен быть корректной hex-строкой с чётным числом символов. Пустая строка `--aad ""` допустима.
+
+Для расшифрования внешнего ciphertext без nonce-заголовка используется `--nonce` (или `--iv`). Вход при этом должен содержать `ciphertext || tag`:
+
+```powershell
+cryptocore --algorithm aes --mode gcm --decrypt --key 2b7e151628aed2a6abf7158809cf4f3c --nonce cafebabefacedbaddecaf888 --input external.raw --output restored.txt --aad aabbccddeeff
+```
+
+Без `--output` действуют прежние имена `.enc`/`.dec` и запрет перезаписи существующего файла. Явный `--output` заменяется готовым результатом только после успеха. Без `--key` при шифровании генерируется случайный ключ AES-128; он выводится один раз после успешной записи.
+
+### Большой AAD и файлы
+
+`--aad-file` читает **бинарные байты**, а не hex-текст. Этот параметр предназначен в том числе для AAD, который не помещается в память:
+
+```powershell
+cryptocore --algorithm aes --mode gcm --encrypt --key 2b7e151628aed2a6abf7158809cf4f3c --input message.bin --output message.gcm --aad-file metadata.bin
+cryptocore --algorithm aes --mode gcm --decrypt --key 2b7e151628aed2a6abf7158809cf4f3c --input message.gcm --output restored.bin --aad-file metadata.bin
+```
+
+Данные и AAD читаются частями до 8192 байт. При расшифровании проверяемый ciphertext сохраняется во временном файле; только после проверки тега расшифровывается именно эта копия. Это исключает подмену входных байтов между проверкой и расшифрованием. Дополнительное место на диске требуется для копии ciphertext и готовящегося результата. Временные файлы удаляются при штатном завершении и обработанных ошибках; аварийное завершение процесса может оставить временный файл результата.
+
+GCM ограничивает длину одного сообщения значением `2^36 - 32` байта, длину AAD — `2^61 - 1` байт. Превышение отклоняется. CLI использует nonce только длиной 12 байт; библиотечные функции поддерживают другие непустые длины через GHASH.
+
+### Библиотечный интерфейс
+
+```python
+from cryptocore.aead import AuthenticationError
+from cryptocore.modes.gcm import GCM
+
+cipher = GCM(key)  # key — 16 случайных байт
+packet = cipher.encrypt(b"message", aad=b"metadata")
+plaintext = GCM(key).decrypt(packet, aad=b"metadata")
+```
+
+Повторные вызовы `encrypt()` без явного nonce каждый раз генерируют новый nonce. AAD принимается как `bytes` либо одноразовый итератор бинарных частей. Для файлов доступны `cryptocore.aead.files.encrypt_file()` и `decrypt_file()`. Низкоуровневые `cryptocore.modes.gcm.encrypt(key, nonce, data, aad)` и `decrypt(...)` принимают nonce отдельно и работают с `ciphertext || tag`. Явный nonce в библиотеке нужен для тестов и совместимости; в оболочке `GCM(key, nonce)` он также задаёт длину заголовка пакета.
+
+**Нельзя повторять nonce с тем же GCM-ключом:** это может разрушить конфиденциальность и подлинность. Случайная генерация и тест 1000 значений не являются математической гарантией отсутствия повторов. Для работы с большим числом сообщений нужно управлять сроком использования ключа. Реализация учебная; Python и табличный GHASH не предоставляют гарантий постоянного времени выполнения.
+
+## Encrypt-then-MAC
+
+`cryptocore.aead.etm.EncryptThenMAC` объединяет собственные AES-CTR и HMAC-SHA256 из предыдущих спринтов. Это отдельный библиотечный интерфейс. Для него требуются **48 случайных байт ключевого материала**: первые 16 используются для AES, оставшиеся 32 — для HMAC. KDF для получения материала из пароля относится к седьмому спринту.
+
+```python
+from cryptocore.aead.etm import EncryptThenMAC
+from cryptocore.csprng import generate_random_bytes
+
+key_material = generate_random_bytes(48)  # сохранить отдельно
+cipher = EncryptThenMAC(key_material)
+packet = cipher.encrypt(b"message", aad=b"metadata")
+plaintext = cipher.decrypt(packet, aad=b"metadata")
+```
+
+Формат пакета — `IV[16] || ciphertext || HMAC[32]`. Каждый вызов шифрования генерирует новый IV. HMAC вычисляется над `D || K_e || IV || ciphertext || AAD || len(ciphertext) || len(AAD)`, где `D = b"CryptoCore-EtM-CTR-HMAC-SHA256-v1\x00"`, а длины — 64-битные числа big-endian в байтах. AES-ключ внутри входа HMAC связывает тег с обеими частями ключевого материала; сам ключ в пакет не записывается. IV и длины полей аутентифицируются, чтобы обнаруживать подмену IV и перенос байтов между ciphertext и AAD. Это явное уточнение упрощённой формулы `MAC(C || AAD)` из задания.
+
+При неверном MAC выбрасывается общий `AuthenticationError` до расшифрования CTR. Сравнение тегов в обеих схемах использует `secrets.compare_digest`. EtM принимает сообщение целиком в памяти, а AAD может получать частями.
+
 ## Структура проекта
 
 ```text
@@ -275,6 +366,10 @@ crypto_core_nk/
 │       ├── cli.py
 │       ├── csprng.py
 │       ├── file_io.py
+│       ├── aead/
+│       │   ├── __init__.py
+│       │   ├── etm.py
+│       │   └── files.py
 │       ├── hash/
 │       │   ├── __init__.py
 │       │   ├── acceleration.py
@@ -295,12 +390,18 @@ crypto_core_nk/
 │           ├── cbc.py
 │           ├── cfb.py
 │           ├── ofb.py
-│           └── ctr.py
+│           ├── ctr.py
+│           └── gcm.py
 ├── tests/
 │   ├── test_aes.py
 │   ├── test_cli.py
 │   ├── test_cli_dgst.py
 │   ├── test_cli_mac.py
+│   ├── test_cli_gcm.py
+│   ├── test_gcm.py
+│   ├── test_gcm_openssl.py
+│   ├── test_etm.py
+│   ├── test_large_aad.py
 │   ├── test_hmac.py
 │   ├── test_cmac.py
 │   ├── test_mac_verification.py
@@ -326,6 +427,7 @@ crypto_core_nk/
 ├── scripts/
 │   ├── benchmark_hash.py
 │   ├── check_large_hmac.py
+│   ├── check_large_aad.py
 │   └── generate_sts_data.py
 ├── TESTING.md
 ├── pyproject.toml
@@ -340,8 +442,11 @@ crypto_core_nk/
 - `file_io.py` — чтение и запись бинарных файлов;
 - `hash/` — потоковые реализации SHA-256 и SHA3-256;
 - `mac/` — потоковые HMAC-SHA256, AES-CMAC и чтение ожидаемого MAC;
+- `modes/gcm.py` — собственные GHASH, GCTR и GCM;
+- `aead/` — общий отказ аутентификации, Encrypt-then-MAC и потоковые файлы GCM;
 - `scripts/benchmark_hash.py` — сравнение скорости хеширования с системными утилитами;
 - `scripts/check_large_hmac.py` — проверка HMAC при ограничении памяти процесса;
+- `scripts/check_large_aad.py` — проверка GCM с AAD больше лимита памяти процесса;
 - `scripts/generate_sts_data.py` — подготовка бинарных данных для NIST STS;
 - `tests/` — модульные и интеграционные тесты.
 
@@ -417,15 +522,17 @@ python -m pytest -q tests/test_openssl_compatibility.py
 
 Тесты проверяют AES, PKCS#7, все пять режимов, CLI, CSPRNG, обработку ключей и IV, ошибочные сценарии, тестовые векторы NIST и совместимость с OpenSSL. Если OpenSSL действительно отсутствует, только compatibility tests могут быть пропущены.
 
-Для пятого спринта добавлены векторы HMAC из RFC 4231, векторы AES-CMAC, проверка подмены файла, ключа и MAC, ошибки CLI и проверки обоих способов исполнения SHA. Три ресурсоёмких теста включаются отдельно:
+Для пятого спринта добавлены векторы HMAC из RFC 4231, векторы AES-CMAC, проверка подмены файла, ключа и MAC, ошибки CLI и проверки обоих способов исполнения SHA. В шестом добавлены векторы GCM NIST, сравнение с PyCryptodome и OpenSSL EVP, подмена каждого поля, проверки отказа до расшифрования, потокового AAD и атомарной записи. Четыре ресурсоёмких теста включаются отдельно:
 
 ```powershell
 $env:CRYPTOCORE_RUN_LARGE_TESTS="1"
-python -m pytest -q -s tests/test_large_file_hash.py tests/test_large_file_hmac.py
+python -m pytest -q -s tests/test_large_file_hash.py tests/test_large_file_hmac.py tests/test_large_aad.py
 Remove-Item Env:CRYPTOCORE_RUN_LARGE_TESTS
 ```
 
 Рекомендуется предварительно установить extra `speed`. В Windows тест HMAC использует файл 1025 МиБ и ограничение committed memory процесса 512 МиБ. В POSIX используется `RLIMIT_AS` и обычный Python, поскольку LLVM может резервировать большое виртуальное адресное пространство; такой прогон занимает существенно больше времени.
+
+Тест GCM использует AAD 65 МиБ при лимите памяти процесса 64 МиБ и не требует extra `speed`. Отдельный запуск: `python scripts/check_large_aad.py`.
 
 ## Проверка CSPRNG через NIST STS
 
@@ -447,7 +554,7 @@ python scripts/generate_sts_data.py "$env:TEMP\cryptocore_sts_data.bin"
 
 ## Примечание по безопасности
 
-ECB раскрывает повторяющиеся шаблоны данных и присутствует в проекте прежде всего в учебных целях. CBC, CFB, OFB и CTR обеспечивают конфиденциальность, но сами по себе не обеспечивают целостность и подлинность: изменение ciphertext или IV не всегда обнаруживается. HMAC и CMAC доступны как отдельные операции над файлами; автоматическое объединение шифрования с аутентификацией относится к следующему спринту.
+ECB раскрывает повторяющиеся шаблоны данных и присутствует в проекте прежде всего в учебных целях. CBC, CFB, OFB и CTR обеспечивают конфиденциальность, но сами по себе не обеспечивают целостность и подлинность: изменение ciphertext или IV не всегда обнаруживается. GCM и библиотечная схема Encrypt-then-MAC объединяют шифрование с аутентификацией; HMAC и CMAC также доступны как отдельные операции над файлами.
 
 Ключ, переданный через `--key`, может сохраниться в истории командной оболочки.
 
